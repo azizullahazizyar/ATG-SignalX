@@ -5,6 +5,7 @@ import discord
 from discord.ext import commands, tasks
 import google.generativeai as genai
 import aiohttp
+import yfinance as yf
 
 # -------------------------------------------------------------
 # DUMMY WEB SERVER (Keeps Render Free Web Service happy)
@@ -19,17 +20,28 @@ def run_flask():
     port = int(os.getenv("PORT", 8080))
     app.run(host="0.0.0.0", port=port)
 
-# Run Flask in a background thread alongside the Discord bot
 threading.Thread(target=run_flask, daemon=True).start()
 
 # -------------------------------------------------------------
-# AI TRADING BOT CONFIGURATION
+# AI TRADING BOT CONFIGURATION & TOP 8 SYMBOLS
 # -------------------------------------------------------------
 DISCORD_TOKEN = os.getenv("DISCORD_TOKEN")
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
 TARGET_CHANNEL_ID = int(os.getenv("TARGET_CHANNEL_ID", "0"))
+
+# Symbol Mapping for yfinance live prices
+TOP_8_SYMBOLS = {
+    "XAUUSD (Gold)": "GC=F",
+    "EURUSD": "EURUSD=X",
+    "GBPUSD": "GBPUSD=X",
+    "US30 (Dow Jones)": "^DJI",
+    "NAS100 (Nasdaq)": "^NDX",
+    "BTCUSD (Bitcoin)": "BTC-USD",
+    "ETHUSD (Ethereum)": "ETH-USD",
+    "USDJPY": "USDJPY=X"
+}
 
 genai.configure(api_key=GEMINI_API_KEY)
 model = genai.GenerativeModel("gemini-1.5-flash")
@@ -57,6 +69,9 @@ async def on_ready():
     if TARGET_CHANNEL_ID != 0 and not auto_market_scanner.is_running():
         auto_market_scanner.start()
 
+# -------------------------------------------------------------
+# 1. MANUAL CHART SCREENSHOT ANALYSIS (IMAGE VISION)
+# -------------------------------------------------------------
 @bot.event
 async def on_message(message):
     if message.author == bot.user:
@@ -73,12 +88,14 @@ async def on_message(message):
                             if resp.status == 200:
                                 image_bytes = await resp.read()
 
+                    symbols_list_str = ", ".join(TOP_8_SYMBOLS.keys())
                     prompt = (
-                        "You are a professional high-frequency scalper and market structure expert. "
+                        f"You are a professional high-frequency scalper and market structure expert. "
+                        f"Primary focus assets are: {symbols_list_str}. "
                         "Analyze the attached chart screenshot for micro-scalping or swing opportunities. "
                         "Identify the timeframe from the chart (1M, 3M, 5M, 15M, 1H, 4H, Daily) and return a stylish signal with emojis:\n\n"
                         "🚨 **VIP SCALP SIGNAL** 🚨\n\n"
-                        "📌 **Asset / Pair:** [Pair Name]\n"
+                        "📌 **Asset / Pair:** [Detected Pair Name]\n"
                         "⏱️ **Timeframe:** [Detected Timeframe - e.g., 5M Scalp / 15M Intraday]\n"
                         "🎯 **Signal Direction:** [🟢 BUY / 🔴 SELL / 🟡 NEUTRAL]\n\n"
                         "⚡ **ENTRY & LEVELS** ⚡\n"
@@ -116,22 +133,48 @@ async def on_message(message):
 
     await bot.process_commands(message)
 
+# -------------------------------------------------------------
+# 2. AUTOMATIC LIVE MARKET SCANNER (RUNS EVERY HOUR)
+# -------------------------------------------------------------
 @tasks.loop(hours=1)
 async def auto_market_scanner():
     channel = bot.get_channel(TARGET_CHANNEL_ID)
     if not channel:
         return
 
-    auto_signal_text = (
-        "📊 **HOURLY MULTI-TIMEFRAME SCAN** 📊\n"
-        "⏱️ **Timeframe Check:** 15M / 1H Close\n"
-        "🌐 **Pairs Monitored:** Major Forex & Crypto\n"
-        "⚡ **Status:** Active monitoring for liquidity sweeps & scalping setups."
-    )
+    market_summary = ""
     
-    await channel.send(auto_signal_text)
-    await send_to_telegram(auto_signal_text)
+    # Download recent 1-hour candle data for each top symbol
+    for name, ticker in TOP_8_SYMBOLS.items():
+        try:
+            data = yf.download(ticker, period="2d", interval="1h", progress=False)
+            if not data.empty:
+                last_close = float(data['Close'].iloc[-1])
+                prev_close = float(data['Close'].iloc[-2])
+                change = ((last_close - prev_close) / prev_close) * 100
+                direction = "📈" if change >= 0 else "📉"
+                market_summary += f"• **{name}**: {last_close:.2f} ({direction} {change:+.2f}%)\n"
+        except Exception:
+            continue
+
+    if not market_summary:
+        market_summary = "Live price feeds temporarily updating..."
+
+    auto_prompt = (
+        f"You are an automated trading bot analyst. Based on the following live market prices:\n\n"
+        f"{market_summary}\n"
+        "Generate a brief HOURLY MARKET PULSE update highlighting market conditions for these assets. "
+        "Select the 1 or 2 best-looking assets for a potential trade setup right now and provide estimated Entry, SL, and TP zones."
+    )
+
+    try:
+        response = model.generate_content(auto_prompt)
+        auto_signal_text = f"📊 **HOURLY LIVE MARKET SCANNER** 📊\n\n{response.text}"
+        
+        await channel.send(auto_signal_text)
+        await send_to_telegram(auto_signal_text)
+    except Exception as e:
+        print(f"Error in automated scanner: {str(e)}")
 
 if __name__ == "__main__":
     bot.run(DISCORD_TOKEN)
-
