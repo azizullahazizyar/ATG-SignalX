@@ -1,21 +1,39 @@
 import os
+import threading
+from flask import Flask
 import discord
 from discord.ext import commands, tasks
 import google.generativeai as genai
 import aiohttp
 
-# 1. Fetch Environment Variables
+# -------------------------------------------------------------
+# DUMMY WEB SERVER (Keeps Render Free Web Service happy)
+# -------------------------------------------------------------
+app = Flask(__name__)
+
+@app.route('/')
+def home():
+    return "ScalpX AI Bot is running online!"
+
+def run_flask():
+    port = int(os.getenv("PORT", 8080))
+    app.run(host="0.0.0.0", port=port)
+
+# Run Flask in a background thread alongside the Discord bot
+threading.Thread(target=run_flask, daemon=True).start()
+
+# -------------------------------------------------------------
+# AI TRADING BOT CONFIGURATION
+# -------------------------------------------------------------
 DISCORD_TOKEN = os.getenv("DISCORD_TOKEN")
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
 TARGET_CHANNEL_ID = int(os.getenv("TARGET_CHANNEL_ID", "0"))
 
-# 2. Configure Gemini AI Vision
 genai.configure(api_key=GEMINI_API_KEY)
 model = genai.GenerativeModel("gemini-1.5-flash")
 
-# 3. Configure Discord Bot
 intents = discord.Intents.default()
 intents.message_content = True
 intents.direct_messages = True
@@ -39,9 +57,6 @@ async def on_ready():
     if TARGET_CHANNEL_ID != 0 and not auto_market_scanner.is_running():
         auto_market_scanner.start()
 
-# -------------------------------------------------------------
-# MODE 1: STYLISH SCALPING & MULTI-TIMEFRAME ANALYSIS
-# -------------------------------------------------------------
 @bot.event
 async def on_message(message):
     if message.author == bot.user:
@@ -58,7 +73,6 @@ async def on_message(message):
                             if resp.status == 200:
                                 image_bytes = await resp.read()
 
-                    # Scalping & Emoji Prompt
                     prompt = (
                         "You are a professional high-frequency scalper and market structure expert. "
                         "Analyze the attached chart screenshot for micro-scalping or swing opportunities. "
@@ -102,9 +116,6 @@ async def on_message(message):
 
     await bot.process_commands(message)
 
-# -------------------------------------------------------------
-# MODE 2: AUTOMATED HOURLY MULTI-TIMEFRAME SCANNER
-# -------------------------------------------------------------
 @tasks.loop(hours=1)
 async def auto_market_scanner():
     channel = bot.get_channel(TARGET_CHANNEL_ID)
